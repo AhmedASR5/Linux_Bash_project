@@ -1,0 +1,161 @@
+#!/bin/bash
+
+declare -A dictionary 
+declare -a keys
+declare -a values
+
+load_dictionary() {
+
+    local index=0
+    mapfile -t lines < "$1"
+    for line in "${lines[@]}"; do
+        local key=$(echo "$line" | awk -F ' ---> ' '{print $1}' | awk '{$1=$1;print}') 
+        local value=$(echo "$line" | awk -F ' ---> ' '{print $2}' | awk -F ' :' '{print $1}' | awk '{$1=$1;print}') 
+        keys[$index]="$key"
+        values[$index]="$value"
+        index=$((index+1))
+    done
+}
+
+decompress_file() {
+    local filepath="$1"
+    mapfile -t codes < "$filepath"
+
+    > decompressed.txt
+
+    for code in "${codes[@]}"; do
+        local found=false
+        for ((i=0; i<${#keys[@]}; i++)); do
+            if [[ "$code" == "${keys[$i]}" ]]; then
+                if [[ "${values[$i]}" == "\\n" ]]; then
+                    echo "" >> decompressed.txt
+                elif [[ "${values[$i]}" == "" ]]; then
+                    echo -n " " >> decompressed.txt
+                else
+                    echo -n "${values[$i]}" >> decompressed.txt
+                fi
+                found=true
+                break
+            fi
+        done
+
+        if [ "$found" == "false" ]; then
+            echo "Error: Code $code not found in dictionary."
+            return
+        fi
+    done
+
+}
+
+
+compress_file() {
+    local filepath="$1"
+    local lastCode=$(printf "0x%04x" ${#dictionary[@]})
+
+    add_to_dictionary() {
+        local word="$1"
+        if [[ -z "$word" ]]; then
+            return
+        fi
+        if [[ -z "${dictionary[$word]}" ]]; then
+            dictionary["$word"]="$lastCode"
+            lastCode=$(printf "0x%04x" $((lastCode + 1)))
+        fi
+        echo "${dictionary[$word]}" >> compressed.txt
+    }
+
+    mapfile -t lines < "$filepath"
+    for line in "${lines[@]}"; do
+        local word=""
+        for ((i=0; i<${#line}; i++)); do
+            char="${line:$i:1}"
+            if [[ "$char" =~ [a-zA-Z0-9] ]]; then
+                word+="$char"
+            else
+                add_to_dictionary "$word"
+                word=""
+                add_to_dictionary "$char"
+            fi
+        done
+        add_to_dictionary "$word"
+
+        # Add the newline  in the dictionary
+        add_to_dictionary "\n"
+    done
+
+    save_dictionary dictionary.txt
+}
+
+save_dictionary() {
+    local output_file="$1"
+    local temp_file=$(mktemp)
+
+    for key in "${!dictionary[@]}"; do
+        local hex_padded=$(printf "%-8s" "${dictionary[$key]}")
+        echo "$hex_padded ---> $key" >> "$temp_file"
+    done
+
+    sort -k1,1 "$temp_file" > "$output_file"
+    rm "$temp_file"
+}
+
+
+calculate_compression_ratio() {
+    # each char represent using 16 bits (2 bytes)
+    local original_characters=$(cat "$1" | wc -c)
+    local original_size=$((original_characters * 2))
+
+    # each code in the compressed file is represente using 16 bits (2 bytes)
+    local compressed_codes=$(cat "compressed.txt" | wc -l)
+    local compressed_size=$((compressed_codes * 2))
+
+    local ratio=$(echo "scale=3; $original_size.0/$compressed_size.0" | bc)
+    echo "Original size: $original_size bytes"
+    echo "Compressed size: $compressed_size bytes"
+    echo "Compression Ratio: $ratio "
+}
+
+
+#main
+
+echo "Does the dictionary.txt file exist? (yes/no)"
+read answer
+
+if [[ $answer == "yes" ]]; then
+    echo "Enter the path of dictionary.txt:"
+    read path
+    load_dictionary "$path"
+
+elif [[ $answer == "no" ]]; then
+    echo "Would you like to create a new empty dictionary.txt? (yes/no)"
+    read create_dictionary
+
+
+    if [[ $create_dictionary == "yes" ]]; then
+        touch dictionary.txt
+        echo "Created a new empty dictionary.txt."
+    fi
+fi
+
+
+echo "Do you want to do compression or decompression? (c/d)"
+read choice
+
+case $choice in
+    [cC] | compression )
+        echo "Enter the path of the file to be compressed:"
+        read path
+        compress_file "$path"
+        calculate_compression_ratio "$path"
+        ;;
+
+    [dD] | decompression )
+        echo "Enter the path of the file to be decompressed:"
+        read path
+        decompress_file "$path"
+        ;;
+
+    * )
+        echo "Invalid choice."
+        ;;
+esac
